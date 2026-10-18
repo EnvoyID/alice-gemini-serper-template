@@ -1,6 +1,9 @@
+import { timingSafeEqual } from "node:crypto";
+
 const DEFAULT_MODEL = "gemini-3.5-flash-lite";
 const MAX_HISTORY_MESSAGES = 8;
 const MAX_HISTORY_MESSAGE_CHARS = 1200;
+const MAX_INPUT_CHARS = 500;
 const MAX_ALICE_TEXT = 1024;
 const TOTAL_RESPONSE_BUDGET_MS = 3600;
 const SERPER_TIMEOUT_MS = 600;
@@ -13,6 +16,16 @@ const SYSTEM_PROMPT = [
   "Если вопрос требует актуальных данных и переданы результаты поиска, опирайся на них; не выдумывай отсутствующие факты.",
   "Если не знаешь ответа, честно скажи об этом."
 ].join(" ");
+
+// Проверка секретного ключа в адресе вебхука: ?key=ВАШ_СЕКРЕТ
+function tokenOk(req) {
+  const expected = process.env.WEBHOOK_SECRET || "";
+  if (expected.length < 24) return false; // секрет не задан или слишком короткий
+  const given = String(req.query?.key ?? "");
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function aliceResponse(text, endSession = false, history = []) {
   return {
@@ -191,11 +204,14 @@ function errorForUser(error) {
 }
 
 export default async function handler(req, res) {
+  // Без правильного ключа отвечаем 404, чтобы не выдавать, что сервис существует
+  if (!tokenOk(req)) return res.status(404).end();
+
   if (req.method === "GET") {
     return res.status(200).json({
       ok: true,
       service: "alice-gemini-serper",
-      message: "Webhook is ready. Yandex Dialogs should send POST requests to /api."
+      message: "Webhook is ready."
     });
   }
 
@@ -207,7 +223,9 @@ export default async function handler(req, res) {
   const startedAt = Date.now();
   const remainingMs = () => TOTAL_RESPONSE_BUDGET_MS - (Date.now() - startedAt);
   const body = req.body && typeof req.body === "object" ? req.body : {};
-  const text = String(body?.request?.command || body?.request?.original_utterance || "").trim();
+  const text = String(body?.request?.command || body?.request?.original_utterance || "")
+    .trim()
+    .slice(0, MAX_INPUT_CHARS);
   const oldHistory = safeHistory(body?.state?.session?.history);
 
   if (!text) {
@@ -221,7 +239,7 @@ export default async function handler(req, res) {
   try {
     let searchContext = "";
     if (isSearchIntent(text) && process.env.SERPER_API_KEY) {
-      // Search has a very short budget because Alice expects a response within 4.5 seconds.
+      // Поиск получает очень короткий бюджет: Алиса ждёт ответ около 4,5 секунды.
       searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
     }
 
