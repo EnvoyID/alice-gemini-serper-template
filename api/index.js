@@ -6,7 +6,7 @@ const MAX_HISTORY_MESSAGE_CHARS = 1200;
 const MAX_INPUT_CHARS = 500;
 const MAX_ALICE_TEXT = 1024;
 const TOTAL_RESPONSE_BUDGET_MS = 3600;
-const SERPER_TIMEOUT_MS = 600;
+const SERPER_TIMEOUT_MS = 1400;
 const GEMINI_TIMEOUT_MS = 2500;
 
 const SYSTEM_PROMPT = [
@@ -86,6 +86,7 @@ async function searchWeb(query, timeoutMs) {
   const key = process.env.SERPER_API_KEY;
   if (!key || timeoutMs < 150) return "";
 
+  const t0 = Date.now();
   try {
     const { response, data } = await fetchJson(
       "https://google.serper.dev/search",
@@ -100,6 +101,7 @@ async function searchWeb(query, timeoutMs) {
       Math.min(SERPER_TIMEOUT_MS, timeoutMs)
     );
 
+    console.log("Serper took", Date.now() - t0, "ms");
     if (!response.ok) {
       console.warn("Serper request failed with HTTP", response.status);
       return "";
@@ -118,7 +120,7 @@ async function searchWeb(query, timeoutMs) {
     if (answerBox) items.unshift(`Краткий ответ поисковика: ${String(answerBox).slice(0, 350)}`);
     return items.length ? items.join("\n") : "";
   } catch (error) {
-    console.warn("Serper request did not finish in time; continuing without search.");
+    console.warn("Serper request did not finish in time (" + (Date.now() - t0) + " ms); continuing without search.");
     return "";
   }
 }
@@ -240,16 +242,18 @@ export default async function handler(req, res) {
     let searchContext = "";
     if (isSearchIntent(text) && process.env.SERPER_API_KEY) {
       // Поиск получает очень короткий бюджет: Алиса ждёт ответ около 4,5 секунды.
-      searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2600)));
+      searchContext = await searchWeb(text, Math.min(SERPER_TIMEOUT_MS, Math.max(0, remainingMs() - 2000)));
     }
 
+    const g0 = Date.now();
     const answer = await askGemini(
       text,
       oldHistory,
       searchContext,
-      Math.max(0, Math.min(GEMINI_TIMEOUT_MS, remainingMs() - 600))
+      Math.max(0, Math.min(GEMINI_TIMEOUT_MS, remainingMs() - 400))
     );
 
+    console.log("Gemini took", Date.now() - g0, "ms; total", Date.now() - startedAt, "ms");
     const history = [
       ...oldHistory,
       { role: "user", text: text.slice(0, MAX_HISTORY_MESSAGE_CHARS) },
